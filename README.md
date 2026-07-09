@@ -11,7 +11,7 @@ Trend → Research → Planner → Script ↔ HookQA → Storyboard → Prompt
 - LLM 에이전트(`src/agents.js`)는 공통 Agent Loop(`src/llm.js`)로 실행 —
   `{status, reason, output, next}` JSON 봉투 + json_schema 구조화 출력 (기본 모델 `claude-opus-4-8`)
 - Skill(`src/skills.js`): HackerNews / GeekNews / Google Trends(KR) — 키 없이 동작
-- 미디어(`src/media.js`): ffmpeg-static + macOS `say`(Yuna) — 로컬에서 실제 mp4 생성
+- 미디어(`src/media.js`): ffmpeg-static + TTS fallback(macOS `say` → Linux `espeak-ng` → 저음량 기준음) + OS별 폰트 fallback — 로컬/Docker에서 실제 mp4 생성
 
 ## 인증 (구독 또는 API 키)
 
@@ -40,6 +40,24 @@ node run.js --bgm assets/bgm.mp3     # 배경음 믹스
 
 산출물: `out/<runId>/` — `final.mp4`, `thumbnail.jpg`, `subs/final.{srt,ass}`,
 `subs/words.json`, `seo.json`, `upload.json`(DRY_RUN 매니페스트), `state.json`
+
+## Docker 실행
+
+API 키 없이 컨테이너 빌드부터 영상 생성까지 한 번에 검증:
+
+```bash
+npm run docker:run
+```
+
+동일 이미지로 실제 주제를 실행하려면 `.env` 또는 shell 환경변수에 `ANTHROPIC_API_KEY`
+또는 `ANTHROPIC_AUTH_TOKEN`을 설정한 뒤:
+
+```bash
+docker compose run --rm video-creator node run.js --topic "AI 코딩 도구"
+```
+
+Docker 이미지에는 Linux 실행에 필요한 `ffmpeg/ffprobe`, `espeak-ng`, `fonts-nanum`이 포함된다.
+생성물은 호스트의 `out/`에 저장된다.
 
 ## 테스트 (API 키 불필요)
 

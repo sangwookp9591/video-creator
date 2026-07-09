@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "node test.js",
-    "start": "node run.js"
+    "start": "node run.js",
+    "docker:run": "docker compose up --build --abort-on-container-exit --exit-code-from video-creator"
   },
   "repository": {
     "type": "git",

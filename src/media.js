@@ -9,15 +9,45 @@ import ffprobeStatic from "ffprobe-static";
 const run = promisify(execFile);
 const EXEC_OPTS = { maxBuffer: 32 * 1024 * 1024 };
 
-const FONT = ["/System/Library/Fonts/AppleSDGothicNeo.ttc", "/System/Library/Fonts/Helvetica.ttc"]
-  .find((f) => fs.existsSync(f));
+function resolveMediaBinary(staticPath, systemCommand, envName) {
+  const override = process.env[envName];
+  if (override) return override;
+  return typeof staticPath === "string" && fs.existsSync(staticPath)
+    ? staticPath
+    : systemCommand;
+}
+
+const FFMPEG_BIN = resolveMediaBinary(ffmpegPath, "ffmpeg", "VIDEO_CREATOR_FFMPEG");
+const FFPROBE_BIN = resolveMediaBinary(ffprobeStatic?.path, "ffprobe", "VIDEO_CREATOR_FFPROBE");
+
+const FONT_CANDIDATES = [
+  process.env.VIDEO_CREATOR_FONT,
+  "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+  "/System/Library/Fonts/Helvetica.ttc",
+  "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+  "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
+  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+].filter(Boolean);
+const FONT = FONT_CANDIDATES.find((f) => fs.existsSync(f));
+const FONT_FAMILY = FONT?.includes("AppleSDGothic")
+  ? "Apple SD Gothic Neo"
+  : FONT?.includes("Nanum")
+    ? "NanumGothic"
+    : "DejaVu Sans";
+
+function fontFile() {
+  if (!FONT) {
+    throw new Error(`사용 가능한 폰트 없음: ${FONT_CANDIDATES.join(", ")}`);
+  }
+  return FONT;
+}
 
 async function ffmpeg(args, cwd) {
-  return run(ffmpegPath, ["-hide_banner", "-y", ...args], { ...EXEC_OPTS, cwd });
+  return run(FFMPEG_BIN, ["-hide_banner", "-y", ...args], { ...EXEC_OPTS, cwd });
 }
 
 export async function probeDuration(file) {
-  const { stdout } = await run(ffprobeStatic.path,
+  const { stdout } = await run(FFPROBE_BIN,
     ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file], EXEC_OPTS);
   return parseFloat(stdout.trim());
 }
@@ -84,7 +114,7 @@ async function renderSceneLocal({ scene, index, duration, outDir }) {
   fs.writeFileSync(txt, wrap(scene.dialogue || scene.visual_goal || ""));
   const outFile = path.join("scenes", `scene_${scene.id}.mp4`);
   const color = SCENE_COLORS[index % SCENE_COLORS.length];
-  const vf = `drawtext=fontfile=${FONT}:textfile=scenes/txt_${scene.id}.txt:expansion=none:fontsize=72:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=24`;
+  const vf = `drawtext=fontfile=${fontFile()}:textfile=scenes/txt_${scene.id}.txt:expansion=none:fontsize=72:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=24`;
   await ffmpeg([
     "-f", "lavfi", "-i", `color=c=${color}:s=1080x1920:d=${duration.toFixed(3)}:r=30`,
     "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", outFile,
@@ -116,22 +146,49 @@ export async function videoAgent({ scenes, outDir }) {
 }
 
 // ---------- Voice Agent ----------
-export async function voiceAgent({ narration, estimatedDur, outDir }) {
+async function synthesizeWithSay({ narration, outDir }) {
+  const sayPath = "/usr/bin/say";
+  if (!fs.existsSync(sayPath)) return null;
+
   const aiff = path.join(outDir, "voice.aiff");
-  const m4a = path.join(outDir, "voice.m4a");
-  let voice = null;
   for (const args of [["-v", "Yuna", "-o", aiff, narration], ["-o", aiff, narration]]) {
     try {
-      await run("/usr/bin/say", args, EXEC_OPTS);
-      voice = args[0] === "-v" ? "Yuna" : "system-default";
-      break;
+      fs.rmSync(aiff, { force: true });
+      await run(sayPath, args, EXEC_OPTS);
+      return { path: aiff, voice: args[0] === "-v" ? "say:Yuna" : "say:system-default" };
     } catch { /* 다음 시도 */ }
   }
-  if (voice) {
-    await ffmpeg(["-i", aiff, "-c:a", "aac", "-b:a", "128k", m4a]);
-    fs.rmSync(aiff, { force: true });
+  return null;
+}
+
+async function synthesizeWithEspeak({ narration, outDir }) {
+  const wav = path.join(outDir, "voice.wav");
+  const attempts = [
+    { voice: "espeak-ng:ko", args: ["-v", "ko", "-s", "155", "-w", wav, narration] },
+    { voice: "espeak-ng:default", args: ["-s", "155", "-w", wav, narration] },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      fs.rmSync(wav, { force: true });
+      await run("espeak-ng", attempt.args, EXEC_OPTS);
+      return { path: wav, voice: attempt.voice };
+    } catch { /* 다음 시도 */ }
+  }
+  return null;
+}
+
+export async function voiceAgent({ narration, estimatedDur, outDir }) {
+  const m4a = path.join(outDir, "voice.m4a");
+  const speech = await synthesizeWithSay({ narration, outDir })
+    ?? await synthesizeWithEspeak({ narration, outDir });
+
+  let voice = speech?.voice ?? null;
+  if (speech) {
+    await ffmpeg(["-i", speech.path, "-c:a", "aac", "-b:a", "128k", m4a]);
+    fs.rmSync(speech.path, { force: true });
   } else {
-    // ponytail: say 불가 환경 fallback — 무음 트랙으로라도 파이프라인 완주
+    // 모든 TTS가 불가한 환경에서도 파이프라인은 완주하도록 낮은 볼륨의 기준음을 생성한다.
     await ffmpeg(["-f", "lavfi", "-i", `sine=frequency=440:duration=${estimatedDur}`,
       "-af", "volume=0.05", "-c:a", "aac", m4a]);
     voice = "sine-fallback";
@@ -163,7 +220,7 @@ export function subtitleAgent({ cues, outDir }) {
     "[Script Info]", "ScriptType: v4.00+", "PlayResX: 1080", "PlayResY: 1920", "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, Outline, Alignment, MarginV",
-    "Style: Default,Apple SD Gothic Neo,64,&H00FFFFFF,&H00000000,3,2,420", "",
+    `Style: Default,${FONT_FAMILY},64,&H00FFFFFF,&H00000000,3,2,420`, "",
     "[Events]", "Format: Layer, Start, End, Style, Text",
     ...cues.map((c) => `Dialogue: 0,${assTime(c.start)},${assTime(c.end)},Default,${c.text}`),
   ].join("\n");
@@ -198,7 +255,7 @@ export async function composeAgent({ sceneFiles, voicePath, cues, outDir, bgmPat
   const chain = cues.map((c, i) => {
     const tf = path.join(subDir, `cue_${i}.txt`);
     fs.writeFileSync(tf, wrap(c.text, 14));
-    return `drawtext=fontfile=${FONT}:textfile=${tf}:expansion=none:fontsize=58:fontcolor=white:borderw=5:bordercolor=black:x=(w-text_w)/2:y=h-460:line_spacing=16:enable='between(t,${c.start.toFixed(2)},${c.end.toFixed(2)})'`;
+    return `drawtext=fontfile=${fontFile()}:textfile=${tf}:expansion=none:fontsize=58:fontcolor=white:borderw=5:bordercolor=black:x=(w-text_w)/2:y=h-460:line_spacing=16:enable='between(t,${c.start.toFixed(2)},${c.end.toFixed(2)})'`;
   }).join(",");
 
   const finalPath = path.join(outDir, "final.mp4");
@@ -220,7 +277,7 @@ export async function composeAgent({ sceneFiles, voicePath, cues, outDir, bgmPat
 export async function qaAgent({ finalPath, expectedDur }) {
   const issues = [];
   // 메타데이터(스트림+길이)는 ffprobe 1회, 콘텐츠 분석(음량+검은화면)은 디코드 1회로 조회
-  const { stdout: probe } = await run(ffprobeStatic.path,
+  const { stdout: probe } = await run(FFPROBE_BIN,
     ["-v", "error", "-show_entries", "format=duration:stream=codec_type", "-of", "csv=p=0", finalPath], EXEC_OPTS);
   const lines = probe.trim().split("\n");
   const duration = parseFloat(lines.at(-1)); // stream 항목들 뒤에 format(duration)이 출력됨
@@ -232,7 +289,7 @@ export async function qaAgent({ finalPath, expectedDur }) {
 
   let meanVol = null;
   try {
-    const { stderr } = await run(ffmpegPath,
+    const { stderr } = await run(FFMPEG_BIN,
       ["-i", finalPath, "-af", "volumedetect", "-vf", "blackdetect=d=1.5:pic_th=0.99", "-f", "null", "-"], EXEC_OPTS);
     meanVol = parseFloat(stderr.match(/mean_volume:\s*(-?[\d.]+)/)?.[1]);
     if (meanVol > -2) issues.push(`음량 과다/clipping 의심: ${meanVol}dB`);
@@ -254,7 +311,7 @@ export async function thumbnailAgent({ finalPath, title, outDir }) {
   const tf = path.join(outDir, "thumb_title.txt");
   fs.writeFileSync(tf, wrap(title, 10));
   const thumbPath = path.join(outDir, "thumbnail.jpg");
-  const vf = `drawtext=fontfile=${FONT}:textfile=${tf}:expansion=none:fontsize=96:fontcolor=white:borderw=6:bordercolor=black:box=1:boxcolor=black@0.45:boxborderw=28:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=20`;
+  const vf = `drawtext=fontfile=${fontFile()}:textfile=${tf}:expansion=none:fontsize=96:fontcolor=white:borderw=6:bordercolor=black:box=1:boxcolor=black@0.45:boxborderw=28:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=20`;
   await ffmpeg(["-ss", "0.3", "-i", finalPath, "-frames:v", "1", "-vf", vf, "-q:v", "3", thumbPath]);
   // ponytail: CTR/Contrast 스코어링 생략 — 재생성 루프 필요해지면 LLM 비전 평가 추가
   return { status: "SUCCESS", reason: "썸네일 생성", output: { path: thumbPath } };
