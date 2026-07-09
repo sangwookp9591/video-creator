@@ -47,6 +47,19 @@ node run.js --bgm assets/bgm.mp3     # 배경음 믹스
 npm test   # MOCK LLM으로 TTS→렌더→자막 burn-in→합성→QA까지 실주행
 ```
 
+### 브라우저 산출물 검증
+
+생성된 영상·썸네일·자막·메타데이터를 브라우저에서 눈으로 확인:
+
+```bash
+node src/preview.js out/<runId>   # preview.html + subs/final.vtt 생성
+agent-browser --executable-path "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --allow-file-access open "file://$PWD/out/<runId>/preview.html"
+agent-browser screenshot --full shot.png
+```
+
+preview.html: 영상(번인 자막 + VTT 트랙), 썸네일, Plan/SEO/QA 표를 한 화면에 표시.
+
 ## 미연동 (키 확보 시 확장 지점)
 
 | 항목 | 위치 | 필요한 것 |

@@ -6,6 +6,7 @@ import * as A from "./agents.js";
 import * as M from "./media.js";
 
 export async function runWorkflow({ topic = null, outDir, bgmPath = null, log = console.log }) {
+  outDir = path.resolve(outDir); // concat 데모서가 상대경로를 concat 파일 위치 기준으로 재해석하므로 절대경로로 고정
   fs.mkdirSync(outDir, { recursive: true });
   const state = {
     runId: path.basename(outDir), topic, startedAt: new Date().toISOString(),
