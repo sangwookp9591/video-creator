@@ -17,7 +17,8 @@ export function loadEnvFile() {
 }
 
 function saveEnv(key, value) {
-  fs.appendFileSync(ENV_FILE, `${key}=${value}\n`);
+  fs.appendFileSync(ENV_FILE, `${key}=${value}\n`, { mode: 0o600 });
+  fs.chmodSync(ENV_FILE, 0o600); // 자격 증명 파일은 소유자 전용
   process.env[key] = value;
 }
 
