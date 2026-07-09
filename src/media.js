@@ -29,15 +29,53 @@ function wrap(text, width = 12) {
 }
 
 // ---------- Video Agent ----------
-// ponytail: Veo/Runway/Kling/LTX는 API 키 확보 시 render()만 구현하면 체인에 합류.
-// 지금은 local-ffmpeg가 항상 성공하는 최종 fallback → 파이프라인이 끝까지 돈다.
+// ponytail: Runway/Kling/LTX는 API 키 확보 시 render()만 구현하면 체인에 합류.
+// local-ffmpeg가 항상 성공하는 최종 fallback → 파이프라인이 끝까지 돈다.
+const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const PROVIDERS = [
-  { name: "veo", available: !!process.env.VEO_API_KEY, render: async () => { throw new Error("veo 연동 미구현"); } },
+  { name: "veo", available: !!GEMINI_KEY, render: renderSceneVeo },
   { name: "runway", available: !!process.env.RUNWAY_API_KEY, render: async () => { throw new Error("runway 연동 미구현"); } },
   { name: "kling", available: !!process.env.KLING_API_KEY, render: async () => { throw new Error("kling 연동 미구현"); } },
   { name: "ltx", available: !!process.env.LTX_API_KEY, render: async () => { throw new Error("ltx 연동 미구현"); } },
   { name: "local-ffmpeg", available: true, render: renderSceneLocal },
 ];
+
+// Veo (Gemini API): 구독 계정의 AI Studio API 키(GEMINI_API_KEY)로 인증
+async function renderSceneVeo({ scene, duration, outDir }) {
+  const { GoogleGenAI } = await import("@google/genai");
+  const ai = new GoogleGenAI({ apiKey: GEMINI_KEY });
+  let op = await ai.models.generateVideos({
+    model: process.env.VEO_MODEL || "veo-2.0-generate-001",
+    prompt: [scene.video_prompt, scene.image_prompt,
+      `camera: ${scene.camera_motion}`, `lighting: ${scene.lighting}`, `style: ${scene.style}`,
+    ].filter(Boolean).join(". "),
+    config: {
+      numberOfVideos: 1,
+      aspectRatio: "9:16",
+      negativePrompt: scene.negative_prompt || undefined,
+      durationSeconds: Math.min(8, Math.max(5, Math.ceil(duration))),
+    },
+  });
+  while (!op.done) {
+    await new Promise((r) => setTimeout(r, 10_000));
+    op = await ai.operations.getVideosOperation({ operation: op });
+  }
+  const video = op.response?.generatedVideos?.[0]?.video;
+  if (!video) {
+    throw new Error(`Veo 응답에 영상 없음: ${JSON.stringify(op.error ?? op.response?.raiMediaFilteredReasons ?? "unknown")}`);
+  }
+  const raw = path.join(outDir, "scenes", `veo_raw_${scene.id}.mp4`);
+  await ai.files.download({ file: video, downloadPath: raw });
+  // 파이프라인 규격(1080x1920/30fps, scene 길이)으로 정규화 — 짧으면 마지막 프레임 유지, 길면 잘라냄
+  const outFile = path.join("scenes", `scene_${scene.id}.mp4`);
+  await ffmpeg([
+    "-i", raw,
+    "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,tpad=stop=-1:stop_mode=clone",
+    "-t", duration.toFixed(3), "-an",
+    "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", outFile,
+  ], outDir);
+  return path.join(outDir, outFile);
+}
 
 const SCENE_COLORS = ["0x1a1a2e", "0x16213e", "0x0f3460", "0x533483", "0x2b2d42", "0x1b263b"];
 
