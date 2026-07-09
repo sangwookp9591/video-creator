@@ -94,21 +94,25 @@ async function renderSceneLocal({ scene, index, duration, outDir }) {
 
 export async function videoAgent({ scenes, outDir }) {
   fs.mkdirSync(path.join(outDir, "scenes"), { recursive: true });
-  const results = [];
-  for (const [index, scene] of scenes.entries()) {
-    let rendered = null, errors = [];
-    for (const p of PROVIDERS.filter((p) => p.available)) {
-      try {
-        rendered = { file: await p.render({ scene, index, duration: scene.duration_sec, outDir }), provider: p.name };
-        break;
-      } catch (e) {
-        errors.push(`${p.name}: ${e.message}`); // 실패 시 다음 Provider
+  const providers = PROVIDERS.filter((p) => p.available);
+  try {
+    // scene별 입출력이 독립(scene.id 단위)이라 병렬 렌더링 — 순서는 Promise.all이 보존
+    const videos = await Promise.all(scenes.map(async (scene, index) => {
+      const errors = [];
+      for (const p of providers) {
+        try {
+          const file = await p.render({ scene, index, duration: scene.duration_sec, outDir });
+          return { id: scene.id, video_url: file, provider: p.name };
+        } catch (e) {
+          errors.push(`${p.name}: ${e.message}`); // 실패 시 다음 Provider
+        }
       }
-    }
-    if (!rendered) return { status: "FAIL", reason: errors.join("; "), output: {} };
-    results.push({ id: scene.id, video_url: rendered.file, provider: rendered.provider });
+      throw new Error(`scene ${scene.id}: ${errors.join("; ")}`);
+    }));
+    return { status: "SUCCESS", reason: "모든 scene 렌더링 완료", output: { videos } };
+  } catch (e) {
+    return { status: "FAIL", reason: e.message, output: {} };
   }
-  return { status: "SUCCESS", reason: "모든 scene 렌더링 완료", output: { videos: results } };
 }
 
 // ---------- Voice Agent ----------
@@ -215,33 +219,31 @@ export async function composeAgent({ sceneFiles, voicePath, cues, outDir, bgmPat
 // ---------- QA Agent ----------
 export async function qaAgent({ finalPath, expectedDur }) {
   const issues = [];
-  const duration = await probeDuration(finalPath);
+  // 메타데이터(스트림+길이)는 ffprobe 1회, 콘텐츠 분석(음량+검은화면)은 디코드 1회로 조회
+  const { stdout: probe } = await run(ffprobeStatic.path,
+    ["-v", "error", "-show_entries", "format=duration:stream=codec_type", "-of", "csv=p=0", finalPath], EXEC_OPTS);
+  const lines = probe.trim().split("\n");
+  const duration = parseFloat(lines.at(-1)); // stream 항목들 뒤에 format(duration)이 출력됨
   if (Math.abs(duration - expectedDur) > 2.5) {
     issues.push(`길이/싱크 불일치: ${duration.toFixed(1)}s (기대 ${expectedDur.toFixed(1)}s)`);
   }
-  const { stdout: streams } = await run(ffprobeStatic.path,
-    ["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", finalPath], EXEC_OPTS);
-  if (!streams.includes("video")) issues.push("비디오 스트림 없음(검은 화면/깨짐)");
-  if (!streams.includes("audio")) issues.push("오디오 스트림 없음");
+  if (!lines.includes("video")) issues.push("비디오 스트림 없음(검은 화면/깨짐)");
+  if (!lines.includes("audio")) issues.push("오디오 스트림 없음");
 
   let meanVol = null;
   try {
     const { stderr } = await run(ffmpegPath,
-      ["-i", finalPath, "-af", "volumedetect", "-f", "null", "-"], EXEC_OPTS);
+      ["-i", finalPath, "-af", "volumedetect", "-vf", "blackdetect=d=1.5:pic_th=0.99", "-f", "null", "-"], EXEC_OPTS);
     meanVol = parseFloat(stderr.match(/mean_volume:\s*(-?[\d.]+)/)?.[1]);
     if (meanVol > -2) issues.push(`음량 과다/clipping 의심: ${meanVol}dB`);
     if (meanVol < -45) issues.push(`음량 과소: ${meanVol}dB`);
-  } catch { issues.push("음량 분석 실패"); }
-
-  try {
-    const { stderr } = await run(ffmpegPath,
-      ["-i", finalPath, "-vf", "blackdetect=d=1.5:pic_th=0.99", "-an", "-f", "null", "-"], EXEC_OPTS);
     if (stderr.includes("black_start")) issues.push("검은 화면 구간 감지");
-  } catch { /* blackdetect 실패는 무시 */ }
+  } catch { issues.push("음량/화면 분석 실패"); }
 
+  // 판정을 산출했으면 SUCCESS — pass/fail은 output 데이터 (Director가 재시도 여부 결정)
   const pass = issues.length === 0;
   return {
-    status: pass ? "SUCCESS" : "FAIL",
+    status: "SUCCESS",
     reason: pass ? "QA 통과" : issues.join("; "),
     output: { pass, issues, metrics: { duration, mean_volume: meanVol } },
   };

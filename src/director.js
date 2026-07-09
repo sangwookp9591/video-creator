@@ -56,11 +56,15 @@ export async function runWorkflow({ topic = null, outDir, bgmPath = null, log = 
     runAgent(A.plannerAgent, { topic: chosenTopic, research: researchOut }));
   artifact("plan.json", plan);
 
+  // 14를 미리 발사: SEO는 planner 산출물만 필요 → 미디어 단계와 겹치게 실행, upload 직전 join
+  const seoPromise = step("seo", () =>
+    runAgent(A.seoAgent, { plan, topic: chosenTopic, research: researchOut })).catch((e) => e);
+
   // 4~5. Script ↔ Hook QA (Fail이면 Hook 재작성, 최대 2회 — Branch)
   let script, hookFeedback = null;
   for (let round = 0; round < 3; round++) {
     script = await step(`script${round ? `_retry${round}` : ""}`, () =>
-      runAgent(A.scriptAgent, { plan, research: researchOut, retry_feedback: hookFeedback }));
+      runAgent(A.scriptAgent, { plan, research: researchOut, qa_feedback: hookFeedback }));
     const hq = await step(`hookqa${round ? `_retry${round}` : ""}`, () =>
       runAgent(A.hookQaAgent, { hook_scene: script.scenes[0], plan }));
     if (hq.pass) { state.hookScore = hq.score; break; }
@@ -99,34 +103,33 @@ export async function runWorkflow({ topic = null, outDir, bgmPath = null, log = 
   const cues = scenes.map((s) => ({ start: s.start, end: s.end, text: s.dialogue, narration: s.narration }));
   const subs = await step("subtitle", () => M.subtitleAgent({ cues, outDir }));
 
-  // 11~12. Compose → QA (Fail 시 1회 재합성 — Retry 결정)
+  // 11~12. Compose → QA (미통과 시 1회 재합성 — Retry 결정)
   let final, qa;
   for (let attempt = 0; attempt < 2; attempt++) {
-    final = await step(`compose${attempt ? "_retry1" : ""}`, () =>
+    const suffix = attempt ? "_retry1" : "";
+    final = await step(`compose${suffix}`, () =>
       M.composeAgent({
         sceneFiles: videos.videos.map((v) => v.video_url),
         voicePath: voice.path, cues, outDir, bgmPath,
       }));
-    log(`▶ qa${attempt ? "_retry1" : ""}`);
-    qa = await M.qaAgent({ finalPath: final.final, expectedDur: voice.duration });
-    state.steps[`qa${attempt ? "_retry1" : ""}`] = { status: qa.status, reason: qa.reason };
-    save();
-    if (qa.output.pass) break;
+    qa = await step(`qa${suffix}`, () =>
+      M.qaAgent({ finalPath: final.final, expectedDur: voice.duration }));
+    if (qa.pass) break;
     if (attempt === 1) {
       state.failedAt = "qa";
       save();
-      throw new Error(`[qa] 재시도 후에도 미통과: ${qa.reason}`);
+      throw new Error(`[qa] 재시도 후에도 미통과: ${qa.issues.join("; ")}`);
     }
   }
-  artifact("qa.json", qa.output);
+  artifact("qa.json", qa);
 
   // 13. Thumbnail
   const thumb = await step("thumbnail", () =>
     M.thumbnailAgent({ finalPath: final.final, title: plan.title, outDir }));
 
-  // 14. SEO
-  const seo = await step("seo", () =>
-    runAgent(A.seoAgent, { plan, topic: chosenTopic, research: researchOut }));
+  // 14. SEO join (planner 직후 발사해 둔 것)
+  const seo = await seoPromise;
+  if (seo instanceof Error) throw seo;
   artifact("seo.json", seo);
 
   // 15. Upload

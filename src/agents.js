@@ -1,13 +1,6 @@
 // LLM 기반 에이전트 정의: 프롬프트 + 출력 스키마 + mock(테스트용)
 import { gatherTrendSources, research as researchSkill } from "./skills.js";
-
-const str = { type: "string" };
-const num = { type: "number" };
-const bool = { type: "boolean" };
-const arr = (items) => ({ type: "array", items });
-const obj = (props) => ({
-  type: "object", properties: props, required: Object.keys(props), additionalProperties: false,
-});
+import { str, num, bool, arr, obj } from "./schema.js";
 
 export const trendAgent = {
   name: "Trend Agent",
@@ -69,7 +62,7 @@ export const scriptAgent = {
   prompt: `Mission: 20~45초 Shorts 대본 생성.
 Rules: 첫 3초 Hook / 5초마다 새로운 정보 / 한 문장은 15자 내외 / 어려운 단어 금지.
 Scene별로 dialogue(화면 자막용), narration(TTS 낭독용), start_sec, end_sec를 만든다.
-retry_feedback이 있으면 Hook을 그 피드백대로 다시 쓴다.`,
+qa_feedback이 있으면 Hook을 그 피드백대로 다시 쓴다.`,
   outputSchema: obj({
     scenes: arr(obj({ id: num, dialogue: str, narration: str, start_sec: num, end_sec: num })),
   }),

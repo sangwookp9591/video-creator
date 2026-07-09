@@ -19,7 +19,7 @@ function rssTitles(xml, source, limit = 15) {
   return items.slice(0, limit).map((m) => ({ source, title: m[1].trim() }));
 }
 
-export async function hackernews() {
+async function hackernews() {
   const res = await safeFetch("https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=15");
   if (!res) return [];
   const data = await res.json();
@@ -28,19 +28,19 @@ export async function hackernews() {
   }));
 }
 
-export async function geeknews() {
+async function geeknews() {
   const res = await safeFetch("https://news.hada.io/rss/news");
   if (!res) return [];
   return rssTitles(await res.text(), "geeknews");
 }
 
-export async function googleTrends() {
+async function googleTrends() {
   const res = await safeFetch("https://trends.google.com/trending/rss?geo=KR");
   if (!res) return [];
   return rssTitles(await res.text(), "google_trends", 20);
 }
 
-export async function reddit() {
+async function reddit() {
   const res = await safeFetch("https://www.reddit.com/r/programming/top.json?t=day&limit=15");
   if (!res) return [];
   const data = await res.json();

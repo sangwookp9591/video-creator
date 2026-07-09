@@ -1,5 +1,6 @@
 // 공통 Agent Loop 실행기 — 모든 LLM 에이전트는 {status, reason, output, next} 봉투로 응답
 import Anthropic from "@anthropic-ai/sdk";
+import { str, obj } from "./schema.js";
 
 const MODEL = process.env.LLM_MODEL || "claude-opus-4-8";
 export const MOCK = process.env.MOCK === "1";
@@ -26,19 +27,12 @@ const COMMON_LOOP = `당신은 하나의 AI Agent이다.
 모든 결과는 재현 가능해야 하며 출력은 항상 구조화한다.
 반드시 {"status":"SUCCESS|RETRY|FAIL","reason":"...","output":{...},"next":"..."} JSON으로만 응답한다.`;
 
-function envelopeSchema(outputSchema) {
-  return {
-    type: "object",
-    properties: {
-      status: { type: "string", enum: ["SUCCESS", "RETRY", "FAIL"] },
-      reason: { type: "string" },
-      output: outputSchema,
-      next: { type: "string" },
-    },
-    required: ["status", "reason", "output", "next"],
-    additionalProperties: false,
-  };
-}
+const envelopeSchema = (outputSchema) => obj({
+  status: { type: "string", enum: ["SUCCESS", "RETRY", "FAIL"] },
+  reason: str,
+  output: outputSchema,
+  next: str,
+});
 
 async function callClaude(agent, input) {
   const response = await getClient().messages.create({
@@ -61,9 +55,8 @@ export async function runAgent(agent, input, { maxRetries = 2 } = {}) {
   let last = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     last = MOCK ? agent.mock(input) : await callClaude(agent, input);
-    if (last.status === "SUCCESS") return { ...last, attempts: attempt + 1 };
-    if (last.status === "FAIL") return { ...last, attempts: attempt + 1 };
-    input = { ...input, retry_feedback: last.reason }; // RETRY → 사유를 넣고 재시도
+    if (last.status !== "RETRY") return { ...last, attempts: attempt + 1 };
+    input = { ...input, retry_feedback: last.reason }; // 자기-재시도 사유 (QA 피드백은 qa_feedback 별도 채널)
   }
   return { ...last, status: "FAIL", attempts: maxRetries + 1 };
 }
