@@ -1,0 +1,17 @@
+services:
+  video-creator:
+    build:
+      context: .
+    image: video-creator:local
+    command: ["node", "run.js", "--mock"]
+    environment:
+      NODE_ENV: production
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      VEO_MODEL: ${VEO_MODEL:-}
+      YOUTUBE_OAUTH_TOKEN: ${YOUTUBE_OAUTH_TOKEN:-}
+      VIDEO_CREATOR_FONT: ${VIDEO_CREATOR_FONT:-}
+    volumes:
+      - ./out:/app/out
