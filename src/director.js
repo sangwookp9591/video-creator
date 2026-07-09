@@ -5,11 +5,28 @@ import { runAgent } from "./llm.js";
 import * as A from "./agents.js";
 import * as M from "./media.js";
 
-export async function runWorkflow({ topic = null, outDir, bgmPath = null, log = console.log }) {
+export async function runWorkflow({
+  topic = null,
+  creativePrompt = "",
+  characterPrompt = "",
+  mascotPrompt = "",
+  mascotImageUrl = "",
+  modelConfig = {},
+  outDir,
+  bgmPath = null,
+  log = console.log,
+}) {
   outDir = path.resolve(outDir); // concat 데모서가 상대경로를 concat 파일 위치 기준으로 재해석하므로 절대경로로 고정
   fs.mkdirSync(outDir, { recursive: true });
+  const userPrompts = {
+    creative_prompt: creativePrompt,
+    character_prompt: characterPrompt,
+    mascot_image_prompt: mascotPrompt,
+    mascot_image_url: mascotImageUrl,
+  };
   const state = {
     runId: path.basename(outDir), topic, startedAt: new Date().toISOString(),
+    input: { ...userPrompts, model_config: modelConfig },
     steps: {}, warnings: [],
   };
   const save = () => fs.writeFileSync(path.join(outDir, "state.json"), JSON.stringify(state, null, 2));
@@ -31,11 +48,34 @@ export async function runWorkflow({ topic = null, outDir, bgmPath = null, log = 
   const artifact = (name, data) =>
     fs.writeFileSync(path.join(outDir, name), JSON.stringify(data, null, 2));
 
+  const applyVisualPromptHints = (promptOut) => ({
+    ...promptOut,
+    scenes: promptOut.scenes.map((scene) => {
+      const imageHints = [
+        scene.image_prompt,
+        characterPrompt && `Consistent character: ${characterPrompt}`,
+        mascotPrompt && `Mascot image reference prompt: ${mascotPrompt}`,
+        mascotImageUrl && `Mascot image reference URL/path: ${mascotImageUrl}`,
+      ].filter(Boolean).join(". ");
+      const videoHints = [
+        scene.video_prompt,
+        creativePrompt && `Creative direction: ${creativePrompt}`,
+        characterPrompt && `Keep the same character design and behavior: ${characterPrompt}`,
+        mascotImageUrl && `Use the mascot image reference consistently: ${mascotImageUrl}`,
+      ].filter(Boolean).join(". ");
+      return {
+        ...scene,
+        image_prompt: imageHints,
+        video_prompt: videoHints,
+      };
+    }),
+  });
+
   // 1. Trend (topic이 주어지면 Skip — Branch 결정)
   let chosenTopic = topic ? { title: topic, source: "user", reason: "사용자 지정", score: 100 } : null;
   if (!chosenTopic) {
     const { topics } = await step("trend", async () =>
-      runAgent(A.trendAgent, { sources: await A.trendAgent.skills() }));
+      runAgent(A.trendAgent, { sources: await A.trendAgent.skills(), user_prompts: userPrompts }));
     artifact("topics.json", topics);
     chosenTopic = topics[0];
   } else {
@@ -49,23 +89,24 @@ export async function runWorkflow({ topic = null, outDir, bgmPath = null, log = 
     runAgent(A.researchAgent, {
       topic: chosenTopic,
       skill: await A.researchAgent.skills({ topic: chosenTopic }),
+      user_prompts: userPrompts,
     }));
   artifact("research.json", researchOut);
 
   // 3. Topic Planner
   const plan = await step("planner", () =>
-    runAgent(A.plannerAgent, { topic: chosenTopic, research: researchOut }));
+    runAgent(A.plannerAgent, { topic: chosenTopic, research: researchOut, user_prompts: userPrompts }));
   artifact("plan.json", plan);
 
   // 14를 미리 발사: SEO는 planner 산출물만 필요 → 미디어 단계와 겹치게 실행, upload 직전 join
   const seoPromise = step("seo", () =>
-    runAgent(A.seoAgent, { plan, topic: chosenTopic, research: researchOut })).catch((e) => e);
+    runAgent(A.seoAgent, { plan, topic: chosenTopic, research: researchOut, user_prompts: userPrompts })).catch((e) => e);
 
   // 4~5. Script ↔ Hook QA (Fail이면 Hook 재작성, 최대 2회 — Branch)
   let script, hookFeedback = null;
   for (let round = 0; round < 3; round++) {
     script = await step(`script${round ? `_retry${round}` : ""}`, () =>
-      runAgent(A.scriptAgent, { plan, research: researchOut, qa_feedback: hookFeedback }));
+      runAgent(A.scriptAgent, { plan, research: researchOut, qa_feedback: hookFeedback, user_prompts: userPrompts }));
     const hq = await step(`hookqa${round ? `_retry${round}` : ""}`, () =>
       runAgent(A.hookQaAgent, { hook_scene: script.scenes[0], plan }));
     if (hq.pass) { state.hookScore = hq.score; break; }
@@ -76,12 +117,13 @@ export async function runWorkflow({ topic = null, outDir, bgmPath = null, log = 
 
   // 6. Storyboard
   const storyboard = await step("storyboard", () =>
-    runAgent(A.storyboardAgent, { scenes: script.scenes, plan }));
+    runAgent(A.storyboardAgent, { scenes: script.scenes, plan, user_prompts: userPrompts }));
   artifact("storyboard.json", storyboard);
 
   // 7. Prompt
-  const prompts = await step("prompt", () =>
-    runAgent(A.promptAgent, { scenes: storyboard.scenes, plan }));
+  const promptsRaw = await step("prompt", () =>
+    runAgent(A.promptAgent, { scenes: storyboard.scenes, plan, user_prompts: userPrompts }));
+  const prompts = applyVisualPromptHints(promptsRaw);
   artifact("prompts.json", prompts);
 
   // 9. Voice — 먼저 생성해 실제 길이를 확정하고, scene 길이를 비례 보정
@@ -98,7 +140,7 @@ export async function runWorkflow({ topic = null, outDir, bgmPath = null, log = 
   }));
 
   // 8. Video (Provider 체인, 실패 시 다음 Provider)
-  const videos = await step("video", () => M.videoAgent({ scenes, outDir }));
+  const videos = await step("video", () => M.videoAgent({ scenes, outDir, mascotImageUrl, modelConfig }));
 
   // 10. Subtitle
   const cues = scenes.map((s) => ({ start: s.start, end: s.end, text: s.dialogue, narration: s.narration }));

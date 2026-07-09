@@ -6,6 +6,8 @@ services:
     command: ["node", "run.js", "--mock"]
     environment:
       NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: ${PORT:-3005}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -13,5 +15,7 @@ services:
       VEO_MODEL: ${VEO_MODEL:-}
       YOUTUBE_OAUTH_TOKEN: ${YOUTUBE_OAUTH_TOKEN:-}
       VIDEO_CREATOR_FONT: ${VIDEO_CREATOR_FONT:-}
+    ports:
+      - "${PORT:-3005}:3005"
     volumes:
       - ./out:/app/out

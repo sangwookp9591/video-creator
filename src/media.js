@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import ffmpegPath from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
+import { hasGeminiApiKey, hasVertexAiOAuth } from "./providers.js";
 
 const run = promisify(execFile);
 const EXEC_OPTS = { maxBuffer: 32 * 1024 * 1024 };
@@ -58,24 +59,59 @@ function wrap(text, width = 12) {
   return out.join("\n");
 }
 
+function resolveLocalAsset(value) {
+  if (!value) return null;
+  if (value.startsWith("/mascots/")) {
+    const file = path.resolve("public", value.slice(1));
+    return fs.existsSync(file) ? file : null;
+  }
+  if (value.startsWith("/out/")) {
+    const parts = value.split("/").filter(Boolean).slice(1).map(decodeURIComponent);
+    const file = path.resolve("out", ...parts);
+    const outRoot = path.resolve("out");
+    return file.startsWith(`${outRoot}${path.sep}`) && fs.existsSync(file) ? file : null;
+  }
+  if (path.isAbsolute(value) && fs.existsSync(value)) return value;
+  return null;
+}
+
 // ---------- Video Agent ----------
 // ponytail: Runway/Kling/LTX는 API 키 확보 시 render()만 구현하면 체인에 합류.
 // local-ffmpeg가 항상 성공하는 최종 fallback → 파이프라인이 끝까지 돈다.
-const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-const PROVIDERS = [
-  { name: "veo", available: !!GEMINI_KEY, render: renderSceneVeo },
-  { name: "runway", available: !!process.env.RUNWAY_API_KEY, render: async () => { throw new Error("runway 연동 미구현"); } },
-  { name: "kling", available: !!process.env.KLING_API_KEY, render: async () => { throw new Error("kling 연동 미구현"); } },
-  { name: "ltx", available: !!process.env.LTX_API_KEY, render: async () => { throw new Error("ltx 연동 미구현"); } },
-  { name: "local-ffmpeg", available: true, render: renderSceneLocal },
-];
+function geminiKey() {
+  return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+}
+
+function videoProviders(modelConfig = {}) {
+  const requested = modelConfig.videoProvider || "local";
+  const providers = [];
+
+  if (requested === "gemini") {
+    providers.push({ name: "veo", available: hasGeminiApiKey() || hasVertexAiOAuth(), render: renderSceneVeo });
+  }
+
+  providers.push(
+    { name: "runway", available: requested === "runway" && !!process.env.RUNWAY_API_KEY, render: async () => { throw new Error("runway 연동 미구현"); } },
+    { name: "kling", available: requested === "kling" && !!process.env.KLING_API_KEY, render: async () => { throw new Error("kling 연동 미구현"); } },
+    { name: "ltx", available: requested === "ltx" && !!process.env.LTX_API_KEY, render: async () => { throw new Error("ltx 연동 미구현"); } },
+    { name: "local-ffmpeg", available: true, render: renderSceneLocal },
+  );
+
+  return providers.filter((provider) => provider.available);
+}
 
 // Veo (Gemini API): 구독 계정의 AI Studio API 키(GEMINI_API_KEY)로 인증
-async function renderSceneVeo({ scene, duration, outDir }) {
+async function renderSceneVeo({ scene, duration, outDir, modelConfig = {} }) {
   const { GoogleGenAI } = await import("@google/genai");
-  const ai = new GoogleGenAI({ apiKey: GEMINI_KEY });
+  const ai = hasVertexAiOAuth()
+    ? new GoogleGenAI({
+      vertexai: true,
+      project: process.env.GOOGLE_CLOUD_PROJECT,
+      location: process.env.GOOGLE_CLOUD_LOCATION,
+    })
+    : new GoogleGenAI({ apiKey: geminiKey() });
   let op = await ai.models.generateVideos({
-    model: process.env.VEO_MODEL || "veo-2.0-generate-001",
+    model: modelConfig.videoModel || process.env.VEO_MODEL || "veo-2.0-generate-001",
     prompt: [scene.video_prompt, scene.image_prompt,
       `camera: ${scene.camera_motion}`, `lighting: ${scene.lighting}`, `style: ${scene.style}`,
     ].filter(Boolean).join(". "),
@@ -109,29 +145,40 @@ async function renderSceneVeo({ scene, duration, outDir }) {
 
 const SCENE_COLORS = ["0x1a1a2e", "0x16213e", "0x0f3460", "0x533483", "0x2b2d42", "0x1b263b"];
 
-async function renderSceneLocal({ scene, index, duration, outDir }) {
+async function renderSceneLocal({ scene, index, duration, outDir, mascotImagePath }) {
   const txt = path.join(outDir, "scenes", `txt_${scene.id}.txt`);
   fs.writeFileSync(txt, wrap(scene.dialogue || scene.visual_goal || ""));
   const outFile = path.join("scenes", `scene_${scene.id}.mp4`);
   const color = SCENE_COLORS[index % SCENE_COLORS.length];
-  const vf = `drawtext=fontfile=${fontFile()}:textfile=scenes/txt_${scene.id}.txt:expansion=none:fontsize=72:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=24`;
-  await ffmpeg([
+  const draw = `drawtext=fontfile=${fontFile()}:textfile=scenes/txt_${scene.id}.txt:expansion=none:fontsize=72:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=24`;
+  const args = [
     "-f", "lavfi", "-i", `color=c=${color}:s=1080x1920:d=${duration.toFixed(3)}:r=30`,
-    "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", outFile,
-  ], outDir);
+  ];
+  if (mascotImagePath) {
+    args.push(
+      "-loop", "1", "-i", mascotImagePath,
+      "-filter_complex", `[1:v]scale=300:-1[mascot];[0:v][mascot]overlay=x=W-w-52:y=92:format=auto,${draw}`,
+      "-t", duration.toFixed(3),
+    );
+  } else {
+    args.push("-vf", draw);
+  }
+  args.push("-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", outFile);
+  await ffmpeg(args, outDir);
   return path.join(outDir, outFile);
 }
 
-export async function videoAgent({ scenes, outDir }) {
+export async function videoAgent({ scenes, outDir, mascotImageUrl = null, modelConfig = {} }) {
   fs.mkdirSync(path.join(outDir, "scenes"), { recursive: true });
-  const providers = PROVIDERS.filter((p) => p.available);
+  const providers = videoProviders(modelConfig);
+  const mascotImagePath = resolveLocalAsset(mascotImageUrl);
   try {
     // scene별 입출력이 독립(scene.id 단위)이라 병렬 렌더링 — 순서는 Promise.all이 보존
     const videos = await Promise.all(scenes.map(async (scene, index) => {
       const errors = [];
       for (const p of providers) {
         try {
-          const file = await p.render({ scene, index, duration: scene.duration_sec, outDir });
+          const file = await p.render({ scene, index, duration: scene.duration_sec, outDir, mascotImagePath, modelConfig });
           return { id: scene.id, video_url: file, provider: p.name };
         } catch (e) {
           errors.push(`${p.name}: ${e.message}`); // 실패 시 다음 Provider

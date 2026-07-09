@@ -3,7 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { str, obj } from "./schema.js";
 
 const MODEL = process.env.LLM_MODEL || "claude-opus-4-8";
-export const MOCK = process.env.MOCK === "1";
+export const isMock = () => process.env.MOCK === "1";
 
 let client = null;
 function getClient() {
@@ -54,7 +54,7 @@ async function callClaude(agent, input) {
 export async function runAgent(agent, input, { maxRetries = 2 } = {}) {
   let last = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    last = MOCK ? agent.mock(input) : await callClaude(agent, input);
+    last = isMock() ? agent.mock(input) : await callClaude(agent, input);
     if (last.status !== "RETRY") return { ...last, attempts: attempt + 1 };
     input = { ...input, retry_feedback: last.reason }; // 자기-재시도 사유 (QA 피드백은 qa_feedback 별도 채널)
   }
