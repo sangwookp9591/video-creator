@@ -13,11 +13,27 @@ Trend → Research → Planner → Script ↔ HookQA → Storyboard → Prompt
 - Skill(`src/skills.js`): HackerNews / GeekNews / Google Trends(KR) — 키 없이 동작
 - 미디어(`src/media.js`): ffmpeg-static + macOS `say`(Yuna) — 로컬에서 실제 mp4 생성
 
+## 인증 (구독 또는 API 키)
+
+**LLM 에이전트** — 셋 중 하나면 된다 (SDK가 자동 인식):
+
+```bash
+ant auth login                          # 1) Claude 구독 OAuth 로그인 (권장)
+export ANTHROPIC_AUTH_TOKEN=sk-ant-oat01-...   # 2) OAuth 토큰 직접 지정
+export ANTHROPIC_API_KEY=sk-ant-api...          # 3) API 키
+```
+
+**Veo 영상 생성** — Google AI 구독 계정의 AI Studio API 키:
+
+```bash
+export GEMINI_API_KEY=...   # 설정하면 Video Agent가 Veo 사용, 실패 시 local-ffmpeg fallback
+export VEO_MODEL=veo-2.0-generate-001   # 선택 (기본값)
+```
+
 ## 실행
 
 ```bash
-export ANTHROPIC_API_KEY=...   # LLM 에이전트용
-node run.js                    # 트렌드에서 주제 자동 선정
+node run.js                          # 트렌드에서 주제 자동 선정
 node run.js --topic "AI 코딩 도구"   # Trend 단계 Skip
 node run.js --bgm assets/bgm.mp3     # 배경음 믹스
 ```

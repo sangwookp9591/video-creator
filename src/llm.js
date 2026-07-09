@@ -6,7 +6,12 @@ export const MOCK = process.env.MOCK === "1";
 
 let client = null;
 function getClient() {
-  if (!client) client = new Anthropic();
+  if (!client) {
+    // 구독인증 지원: API 키 없이도 ANTHROPIC_AUTH_TOKEN(OAuth) 또는 `ant auth login` 프로필을 SDK가 자동 인식.
+    // OAuth 토큰(sk-ant-oat...)은 oauth beta 헤더가 필요하다.
+    const oauth = process.env.ANTHROPIC_AUTH_TOKEN?.startsWith("sk-ant-oat");
+    client = new Anthropic(oauth ? { defaultHeaders: { "anthropic-beta": "oauth-2025-04-20" } } : {});
+  }
   return client;
 }
 
