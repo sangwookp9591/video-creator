@@ -2,7 +2,7 @@
 // 사용법: node run.js [--topic "주제"] [--mock] [--bgm path/to.mp3]
 // 실제 실행에는 ANTHROPIC_API_KEY 필요. --mock은 LLM 없이 파이프라인만 검증.
 import path from "node:path";
-import { runWorkflow } from "./src/director.js";
+import { ensureAuth } from "./src/auth.js";
 
 const args = process.argv.slice(2);
 const getFlag = (name) => {
@@ -10,6 +10,14 @@ const getFlag = (name) => {
   return i >= 0 ? args[i + 1] : null;
 };
 if (args.includes("--mock")) process.env.MOCK = "1";
+
+try {
+  await ensureAuth(); // 최초 실행 시 인증 화면 (자격 증명 있으면 통과)
+} catch (e) {
+  console.error(`\n❌ ${e.message}`);
+  process.exit(1);
+}
+const { runWorkflow } = await import("./src/director.js"); // 인증 후 로드 (env 반영)
 
 const outDir = path.resolve("out", new Date().toISOString().replace(/[:.]/g, "-"));
 
